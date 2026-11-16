@@ -289,7 +289,7 @@ def parse_bbb_spread(html: str) -> tuple[float, str]:
     try:
         tables = pd.read_html(io.StringIO(html))
         for t in tables:  # first table containing Baa2/BBB = large non-financial firms
-            flat = t.astype(str)
+            flat = t.map(lambda v: "" if pd.isna(v) else str(v))
             mask = flat.apply(lambda r: r.str.contains("Baa2/BBB", regex=False)).any(axis=1)
             if mask.any():
                 row = flat[mask].iloc[0].tolist()
@@ -334,9 +334,10 @@ def parse_oecd_sdmx(csv_text: str) -> pd.DataFrame:
     text_cols = [c for c in df.columns
                  if c not in skip and not pd.api.types.is_numeric_dtype(df[c])]
     label = df[text_cols].fillna("").astype(str).agg(" | ".join, axis=1).str.lower()
-    is_comb = label.str.contains("combined") | label.str.contains("comb_cit")
-    excl = ("targeted", "small", "sub-central", "less ", "exclusive", "surtax", "dividend")
-    for e in excl:
+    is_comb = label.str.contains("combined") | label.str.contains("comb")
+    # drop targeted / small-business and dividend series, but keep "non-targeted"
+    is_comb &= ~label.str.contains(r"(?<!non-)(?<!non )\btargeted\b", regex=True)
+    for e in ("small business", "small-business", "dividend", "less deductions", "exclusive of surtax"):
         is_comb &= ~label.str.contains(e, regex=False)
     d = df[is_comb].copy()
     if d.empty:
@@ -345,7 +346,9 @@ def parse_oecd_sdmx(csv_text: str) -> pd.DataFrame:
     d["_v"] = pd.to_numeric(d[val], errors="coerce")
     d["_y"] = pd.to_numeric(d[year].astype(str).str[:4], errors="coerce")
     d = d.dropna(subset=["_v", "_y"])
-    d = d.sort_values("_y").groupby(area).tail(1)
+    # latest year per jurisdiction; if several combined series remain, the standard
+    # (headline) rate is the highest of them
+    d = d.sort_values(["_y", "_v"]).groupby(area).tail(1)
     out = pd.DataFrame(
         {
             "Country": d[name_col].values if name_col else d[area].values,
@@ -396,11 +399,16 @@ def parse_te_country(html: str) -> tuple[float, str]:
     for meta in soup.find_all("meta"):
         if meta.get("name", "").lower() == "description" or meta.get("property", "") == "og:description":
             texts.append(meta.get("content", ""))
-    texts.append(soup.get_text(" ", strip=True)[:5000])
+    texts.append(soup.get_text(" ", strip=True)[:20000])
+    date_re = rf"(({MONTHS})\s+\d{{1,2}},?\s*\d{{4}})"
     for t in texts:
-        m = re.search(rf"to\s+(-?\d+(?:\.\d+)?)%\s+on\s+(({MONTHS})\s+\d{{1,2}},\s*\d{{4}})", t)
+        m = re.search(rf"(-?\d+(?:\.\d+)?)\s*(?:%|percent)[^.%]{{0,60}}?{date_re}", t)
         if m:
             return float(m.group(1)) / 100.0, m.group(2)
+    for t in texts:  # value without a date in the same sentence
+        m = re.search(r"(?:yield|bond)[^.%]{0,80}?(?:to|at|around)\s+(-?\d+(?:\.\d+)?)\s*(?:%|percent)", t, re.I)
+        if m:
+            return float(m.group(1)) / 100.0, "latest on page"
     raise ValueError("Yield not found on Trading Economics country page")
 
 
