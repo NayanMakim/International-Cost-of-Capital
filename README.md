@@ -1,1 +1,8 @@
-# International-Cost-of-Capital
+streamlit>=1.50,<2
+pandas>=2.2
+requests>=2.31
+beautifulsoup4>=4.12
+lxml>=5.0
+xlrd>=2.0.1
+openpyxl>=3.1
+altair>=5.0
